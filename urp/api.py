@@ -9,9 +9,11 @@ from json import loads
 from lxml.etree import HTML
 from time import sleep
 from csv import reader
-from os.path import exists
+from os.path import exists, dirname
 from getopt import getopt
 from sys import argv
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def get_username_and_password(username: str, password: str) -> Tuple[str, str]:
@@ -35,7 +37,7 @@ def read_lessons_from_file(username: str) -> List[Lesson]:
     :param username: 学号
     :return: 所有要选的课的列表
     """
-    path = "user_info/" + username + ".csv"
+    path = dirname(dirname(__file__)) + "/user_info/" + username + ".csv"
     if not exists(path):  # 导入选课内容
         print("选课文件不存在！请检查！")
         exit(0)
@@ -225,47 +227,47 @@ def choose_lesson(lessons: List[Lesson], session: Session) -> None:
     :param session: 登录好的session
     :return: None
     """
-    choose_lesson_page = get_choose_lesson_page(session)  # 获取选课页面树来获取token和培养方案id
-    token_value = get_token_value(choose_lesson_page)
-    major_id = get_major_id(choose_lesson_page)
+    minor_registration_page = get_minor_registration_page(session)  # 获取辅修方案注册页面树来获取token和培养方案id
+    token_value = get_token_value(minor_registration_page)
+    major_id = get_major_id(minor_registration_page)
     data = _first_choose(lessons, session, token_value, major_id)
     _second_choose(session, data)
 
 
-def get_choose_lesson_page(session: Session):
+def get_minor_registration_page(session: Session):
     """
-    获取选课页面
+    获取辅修方案注册页面
 
     :param session: 登录好的session
-    :return: 选课页面树
+    :return: 辅修方案注册页面树
     """
     count = 0
     rp = None
     for _ in range(10):
         count += 1
         try:
-            rp = session.get(url="https://urp.shou.edu.cn/student/courseSelect/courseSelect/index",
+            rp = session.get(url="https://urp.shou.edu.cn/student/rollManagement/minorProgramRegistration/index",
                              timeout=10)
         except ConnectionError:
-            print("选课页面无法加载！连接错误！")
+            print("辅修方案注册页面无法加载！连接错误！")
             print('第%d次重试！' % count)
             continue
         except HTTPError:
-            print("选课页面无法加载！请求网页有问题！")
+            print("辅修方案注册页面无法加载！请求网页有问题！")
             print('第%d次重试！' % count)
             continue
         except Timeout:
-            print("选课页面无法加载！请求超时！")
+            print("辅修方案注册页面无法加载！请求超时！")
             print('第%d次重试！' % count)
             continue
         except RequestException as e:
-            print('选课页面无法加载！' + str(e))
+            print('辅修方案注册页面无法加载！' + str(e))
             print('第%d次重试' % count)
             continue
         else:
             break
     if count >= 10:
-        print("选课页面无法加载！请检查urp！")
+        print("辅修方案注册页面无法加载！请检查urp！")
         exit(0)
     judge_logout(rp)
     return HTML(rp.text)
@@ -339,7 +341,7 @@ def get_token_value(tree) -> str:
     """
     获取token_value
 
-    :param tree: https://urp.shou.edu.cn/student/courseSelect/courseSelect/index解析后的树
+    :param tree: https://urp.shou.edu.cn/student/rollManagement/minorProgramRegistration/index解析后的树
     :return: token_value的值
     """
     return tree.xpath('//input[@id="tokenValue"]/@value')[0]
@@ -352,7 +354,8 @@ def get_major_id(tree) -> str:
     :param tree: https://urp.shou.edu.cn/student/courseSelect/courseSelect/index解析后的树
     :return: 培养方案id
     """
-    return findall(r'fajhh=[0-9]*', tree.xpath('//li[@id="zyxk"]/@onclick')[0])[0].split('=')[1]
+    return findall(r"querysqxx\('[0-9]*'\)",
+                   tree.xpath('//button[@id="zxbgbtn2"]/@onclick')[0])[0].split("('")[1].split("')")[0]
 
 
 def judge_logout(html: Response) -> None:
@@ -376,11 +379,13 @@ def login(username: str, password: str) -> Session:
     :return: 登录好的Session
     """
     session = Session()
+    session.verify = False
     password = md5(bytes(password, encoding='utf-8')).hexdigest()  # 密码MD5加密
     # 获取验证码
     try:
         cache_img = session.get('https://urp.shou.edu.cn/img/captcha.jpg', timeout=10)
-    except ConnectionError:
+    except ConnectionError as e:
+        print(e)
         print('获取验证码失败！连接错误！')
         exit(0)
     except HTTPError:
@@ -438,3 +443,53 @@ def login(username: str, password: str) -> Session:
             else:
                 print('未知返回url！网址：' + rp.url)
                 exit(0)
+
+
+def delete_course(session: Session, lesson_id: str, class_id: str):
+    """
+        退课
+
+        :param session: 登录好的session
+        :param lesson_id: 课程号，例如：1109906
+        :param class_id: 课序号，例如：01
+        :return: None
+    """
+    choose_lesson_page = get_minor_registration_page(session)  # 获取辅修方案注册页面树来获取token和培养方案id
+    token_value = get_token_value(choose_lesson_page)
+    major_id = get_major_id(choose_lesson_page)
+    count = 0
+    rp = None
+    data = {
+        'fajhh': major_id,
+        'kch': lesson_id,
+        'kxh': class_id,
+        'tokenValue': token_value
+    }
+    for _ in range(10):
+        count += 1
+        try:
+            rp = session.post(url="https://urp.shou.edu.cn/student/courseSelect/delCourse/deleteOne",
+                              data=data, timeout=10)
+        except ConnectionError:
+            print("退课失败！连接错误！")
+            print('第%d次重试！' % count)
+            continue
+        except HTTPError:
+            print("退课失败！请求网页有问题！")
+            print('第%d次重试！' % count)
+            continue
+        except Timeout:
+            print("退课失败！请求超时！")
+            print('第%d次重试！' % count)
+            continue
+        except RequestException as e:
+            print('退课失败！' + str(e))
+            print('第%d次重试' % count)
+            continue
+        else:
+            break
+    if count >= 10:
+        print("退课失败！请检查urp！")
+        exit(0)
+    judge_logout(rp)
+    print(rp.text)
